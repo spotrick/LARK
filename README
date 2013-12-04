@@ -1,0 +1,123 @@
+NAME
+    LARK
+
+DESCRIPTION
+    LARK is a Lighweight Archive System for building an archive.
+
+    A Lark archive is defined as a configuration file and an arbitrarily
+    nested set of objects, using the file system as storage.
+
+    An object may be a collection of other objects, or it may be a document.
+
+    A collection includes metadata describing the object, and optionally one
+    or more objects.
+
+        <object id="example"
+            description="This is an example collection object"
+            title="An example of a collection"
+            type="collection">
+          <contents id="1" title="Object 1" />
+          <contents id="1" title="Object 2" />
+        </object>
+
+    This example would be stored as .../example/object.xml
+
+    A document includes metadata describing the document, and optionally one
+    or more data files respresenting the document, in any desired digital
+    format (jpg, pdf, mp3, doc, xls, ...).
+
+        <object id="1"
+            description="This is an example document object"
+            title="An example of a document"
+            type="image">
+          <contents id="some.jpg" title="example photograph" />
+        </object>
+
+    This example would be stored as .../example/1/object.xml and
+    .../example/1/some.jpg
+
+CONFIGURATION
+    An archive requires a configuration file, config.xml, in the root
+    directory of the archive.
+
+    A minimal configuration would be:
+
+        <config>
+          <root>/data/example</root>
+        </config>
+
+    i.e. we have to at least tell LARK where the files are!
+
+    A more detailed example, allowing for the archive to be exposed on the
+    Web, would be:
+
+        <config>
+          <root>/data/example</root>
+          <home>http://www.myschool.edu/lark/example</home>
+          <title>Lark example</title>
+          <!-- document types -->
+          <types>
+            <type id="collection">
+              <field id="000" name="id" type="text" size="20" caption="ID" />
+              <field id="001" name="title" type="text" size="50" caption="Title" />
+              <field id="007" name="description" type="textarea" cols="50" rows="5" caption="Description" />
+              ...
+            </type>
+            <type id="document">
+              <field id="000" name="id" type="text" size="20" caption="ID" />
+              <field id="001" name="title" type="text" size="50" caption="Title" />
+              <field id="002" name="author" type="text" size="50" caption="Author" />
+              ...
+            </type>
+            <type id="photograph">
+              <field id="000" name="id" type="text" size="20" caption="ID" />
+              <field id="001" name="title" type="text" size="50" caption="Title" />
+              <field id="002" name="photographer" type="text" size="50" caption="Photographer" />
+              ...
+            </type>
+            ...
+          </types>
+          <!-- html code for building web pages -->
+          <html id="htmlhead"><![CDATA[
+    <meta http-equiv="Content-Language" content="en" />
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <link rel="StyleSheet" type="text/css" href="/coll/lark.css" />
+          ]]></html>
+        </config>
+
+    In this example, we've defined some object types (collection, document,
+    photograph, ...) and some html code to be included when we build web
+    pages. Our CGI script, lark.cgi, uses these when constructing a web edit
+    form, and for building web pages.
+
+    You can also include any other configuration values which might be used
+    in locally written script.
+
+AUTHOR
+    Steve Thomas <stephen.thomas@adelaide.edu.au>
+
+VERSION
+    This is version 2013.12.04
+
+LICENCE
+    Copyright (c) 2013 Stephen George Anthony Thomas
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
