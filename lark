@@ -20,8 +20,8 @@ use strict;
 ##----------------------------------------------------------------------
 ## CONFIGURATION SECTION
 
-# data archives home
-my $top = '/data/web/www/coll';
+# data archives home : this is where all your archives will reside.
+my $top = '/data/www/lark';
 
 my $openicon = '/lib/open.png'; # not used
 my $nexticon = '/lib/next.png'; # not used
@@ -612,6 +612,7 @@ sub check_authorisation {
     ### to update this archive.
 
     ## E.g.
+    my $instid = $form->param('instid');
     unless ( grep /^$instid$/, @{ $config->{users}->{id} } ) {
 	print http_header();
 	oops( qq|Sorry! You are not authorised to use this form.| );
