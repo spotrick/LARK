@@ -1,0 +1,764 @@
+#!/usr/bin/perl -w
+#
+# pod-style documentation is at the end of this file
+
+use CGI;
+use CGI::Carp qw/fatalsToBrowser/;
+
+use File::Basename;
+
+use XML::Simple;
+use Data::Dumper;
+
+# Apache will be writing the files, so make them group read/write
+umask 0007;
+
+my $DEBUG = 0;
+
+use strict;
+
+##----------------------------------------------------------------------
+## CONFIGURATION SECTION
+
+# data archives home
+my $top = '/data/web/www/coll';
+
+my $openicon = '/lib/open.png'; # not used
+my $nexticon = '/lib/next.png'; # not used
+my $previcon = '/lib/previous.png';
+my $starticon = '/lib/start.png';
+
+##----------------------------------------------------------------------
+
+my $form = new CGI;
+
+##----------------------------------------------------------------------
+
+my $c = $form->param('c');
+my $config = getConfig( $c );
+
+my $path = $form->param('path');
+$path = '.' unless defined $path and $path; # '.' is the collection root
+
+## allow for built-in authentication
+if ( $config->{authenticate} eq 'true' ) {
+      check_authorisation();
+}
+
+##----------------------------------------------------------------------
+
+print http_header();
+print html_head( $config->{title} );
+
+my $root = $config->{root};
+my $home = $config->{home};
+
+my $submit = $form->param('submit');
+$submit = '' unless defined $submit;
+
+MAIN_CASE: {
+
+	if ($submit eq 'Update')	{ updateObject($path); last; }
+
+	if ($submit eq 'Add')		{ $path = addObject($path); last; }
+
+	if ($submit eq 'Delete Object')	{ $path = deleteObject($path); last; }
+
+	if ($submit eq 'Upload')	{ addFile($path); last; }
+
+	if ($submit eq 'Delete Marked')	{ deleteFile($path); last; }
+
+	if ($submit eq 'Cancel')	{ $form->delete_all(); last; }
+
+	if ($submit eq 'Done')		{ last; }
+
+}
+
+showObject();
+
+print html_foot();
+
+exit;
+
+##----------------------------------------------------------------------
+
+sub showObject {
+    my $object = getObject( $path );
+    my $id = $object->{id};
+    my $type = $object->{type};
+    my %fields = %{ $config->{types}->{type}->{$type}->{field} };
+    my $title = $object->{title};
+
+    print $form->start_multipart_form(-action=>$ENV{SCRIPT_NAME});
+
+    print qq|<input type="hidden" name="c" value="$c" />|,
+          qq|<input type="hidden" name="path" value="$path" />\n|;
+
+    if ( $config->{authenticate} eq 'true' ) {
+	save_authorisation();
+    }
+
+    my $tree = '.';
+    print qq|<h1>|;
+    print qq|<input type="image" src="$starticon" title="" |,
+	  qq|onClick="form.path.value='$tree'; form.submit()" />|;
+    unless ($path eq '.') { # unless we're at the top
+	my $parent = dirname( $path );
+	foreach my $x ( split /\//, $parent ) {
+	    next unless $x;
+	    next if $x eq '.';
+	    $tree .= "/$x";
+	    print qq|TREE = $tree\n| if $DEBUG;
+	    print qq|<input type="image" src="$previcon" title="$x" |,
+		  qq|onClick="form.path.value='$tree'; form.submit()" />|;
+	}
+    }
+    print qq|$title</h1>\n|;
+
+    # METADATA ---------------------------------------------------------
+
+    print qq|<fieldset>|;
+    print qq|<legend>Metadata Section</legend>|;
+    print qq|<table class="editform">\n|;
+    foreach my $field (sort keys %fields) {
+	my %field = %{ $fields{$field} };
+	print qq|<tr>|,
+	      qq|<th width="25%">$field{caption}:</th>|,
+	      qq|<td>|;
+	my $name = $field{name};
+	my $value = $object->{$name}; $value = '' unless defined $value;
+	if ( $field{type} eq 'textarea' ) {
+	    # allow for line breaks ...
+	    $value =~ s#<br />#\n#gs;
+	    my $cols = $field{cols};
+	    my $rows = int( length($value) / $cols) + 3;
+	    print qq|<textarea name="$field{name}" cols="$cols" rows="$rows">$value</textarea>\n|;
+	}
+	elsif ( $name eq "id" ) {
+	    print qq|<input readonly type="text" name="$field{name}" size="$field{size}" value="$value" />\n|;
+	}
+	else {
+	    print qq|<input type="text" name="$field{name}" size="$field{size}" value="$value" />\n|;
+	}
+	print qq|</td>|,
+	      qq|</tr>|;
+    }
+    print qq|<tr>|,
+          qq|<th width="25%"></th>|,
+          qq|<td>|,
+          qq|<input type="submit" name="submit" value="Update">|,
+          qq|</td>|,
+          qq|</tr>|,
+          qq|</table>|,
+          qq|</fieldset>|;
+
+    # CONTENT ----------------------------------------------------------
+
+    print qq|<fieldset>|,
+          qq|<legend>Content Section</legend>|,
+          qq|<table class="editform">|,
+          qq|<tr><th width="25%">Contents:</th>|,
+          qq|<td>|;
+
+    if ( defined $object->{contents} ) {
+
+	if ( $type eq 'collection' ) {
+	    showCollections($object, $path);
+	}
+	else { # document
+	    showDocuments($object, $path);
+	}
+    }
+    else { # can delete object if there are no contents ...
+	print qq|No contents<br />|;
+	print qq|<input type="submit" name="submit" value="Delete Object" /> ?\n|;
+    }
+    print '</td>', '</tr>', '</table>';
+
+    print qq|<h4>Add content?</h4>|;
+    print qq|<table class="editform">\n|;
+
+    if ( $type eq 'collection' ) {
+
+	print qq|<tr>|,
+	      qq|<th width="25%" valign="top">Id:</th>|,
+	      qq|<td>|,
+	      qq|<input type="text" size="20" name="content_id"><br />|,
+	      qq|</td>|, qq|</tr>|;
+
+	print qq|<tr>|,
+	      qq|<th width="25%" valign="top">Type:</th>|,
+	      qq|<td>|,
+	      qq|<select name="content_type">|;
+
+	for my $type ( sort keys %{ $config->{types}->{type} } ) {
+	    print qq|<option>$type</option>|;
+	}
+
+	print qq|</select>|,
+	      qq|</td>|, qq|</tr>|;
+
+	print qq|<tr>|,
+	      qq|<th width="25%" valign="top">Title:</th>|,
+	      qq|<td>|,
+	      qq|<input type="text" size="30" name="content_title"><br />|,
+	      qq|<input type="submit" name="submit" value="Add">|,
+	      qq|</td>|, qq|</tr>|;
+
+    }
+    else { # document
+
+	print qq|<tr><th width="25%" valign="top">Upload files</th>\n|,
+	      qq|<td>|,
+	      qq|<input type="file" size="30" name="filename">\n|,
+	      qq|</td></tr>\n|,
+	      qq|<tr><th width="25%" valign="top">description</th>\n|,
+	      qq|<td>|,
+	      qq|<input type="text" size="30" name="filedesc"><br />\n|,
+	      qq|<input type="submit" name="submit" value="Upload">\n|,
+	      qq|</td></tr>\n|;
+
+    }
+    print qq|</table>|,
+          qq|</fieldset>|,
+          $form->endform;
+
+    print '<pre>', Dumper( $object ), '</pre>' if $DEBUG;
+}
+
+sub showCollections {
+    my ($object, $path) = @_;
+
+    ## list the collections in this object, with
+    ## an Edit button against each
+    ## Use onCLick to change the path to the new collection before submit
+
+    foreach my $id ( sort keys %{ $object->{contents} } ) {
+	my $title = $object->{contents}->{$id}->{title};
+	$title = $id unless $title;
+
+	print qq|<p>|,
+	      qq|<input type="submit" name="submit" |,
+	      qq|value="edit" title="edit this" |,
+	      qq|onClick="form.path.value='$path/$id'; form.submit()" />|,
+	      qq| $id: |,
+	      $title,
+	      qq|</p>|;
+
+    }
+}
+
+sub showDocuments {
+    my ($object, $path) = @_;
+
+    ## List the documents in this object, with a checkbox against
+    ## each to allow deletions.
+
+    foreach my $id ( sort keys %{ $object->{contents} } ) {
+	my $title = $object->{contents}->{$id}->{title};
+	$title = $id unless $title;
+
+	print qq|<input type="checkbox" name="contents" value="$id">|;
+
+	## images get special linking for lightbox
+	if ( $id =~ /(.+)\.(jpg|png)$/i ) {
+	    my $fstem = $1;
+	    print qq|<a target="_new" href="${home}/${path}/${fstem}-w.jpg"|,
+		  qq| rel="lightbox[show]" title="$title" rev="${home}/${path}/$id"|,
+		  qq|><img src="${home}/${path}/${fstem}-t.jpg" /></a><br />\n|;
+	}
+	else {
+	    print qq|<a target="_new" href="${home}/${path}/$id">|,
+		  $title,
+		  qq|</a><br />|;
+	}
+
+    }
+
+    ## can delete content for documents ...
+    print qq|<input type="submit" name="submit" value="Delete Marked" />\n|;
+}
+
+##----------------------------------------------------------------------
+
+sub updateObject {
+    my $path = shift;
+    my $object = getObject( $path );
+    my $id = $object->{id};
+    my $type = $object->{type};
+    my %fields = %{ $config->{types}->{type}->{$type}->{field} };
+    foreach my $field (sort keys %fields) {
+	my %field = %{ $fields{$field} };
+	my $name = $field{name};
+	my $value = $form->param($name); $value = '' unless defined $value;
+	# allow for line breaks ...
+	$value =~ s'\r*\n'<br />'gs;
+	$object->{$name} = $value;
+    }
+    putObject( $object, $path );
+
+    # re-generate an html index page for the object ...
+    makeHTML( $object, $path );
+
+    # now update the parent, in case we changed the title of this object
+    unless ($path eq '.') { # unless we're at the top
+	my $parent = dirname( $path );
+	my $title = $object->{title};
+	my $pobject = getObject( $parent );
+	$pobject->{contents}->{$id}->{title} = $title;
+	putObject( $pobject, $parent );
+	makeHTML( $pobject, $parent );
+    }
+}
+
+sub addObject {
+    my $path = shift;
+    my $id = $form->param('content_id');
+    my $type = $form->param('content_type');
+    my $title = $form->param('content_title');
+
+    $title = $id unless defined $title and $title;
+
+    # object id must conform ...
+    if ($id =~ m#[^\w.-]#) {
+        oops( "Oops! Cannot create : id must contain A-Z, a-z or 0-9 only!" );
+	return;
+    }
+
+    # create directory for the new object ...
+    unless ( -d "$root/$path/$id" ) {
+	mkdir "$root/$path/$id", 0777; 
+    }
+
+    # create the new object (unless it exists -- allows relinking) ...
+    my $object;
+    if ( -e "$root/$path/$id/object.xml" ) {
+	$object = getObject( "$path/$id" );
+    }
+    else {
+	$object = { id => $id, type => $type, title => $title };
+	putObject( $object, "$path/$id" );
+    }
+
+    # generate an html index page for the object ...
+    makeHTML( $object, "$path/$id" );
+
+    # ... and add the new object to the current object's contents ...
+    my $current = getObject( $path );
+    $current->{contents}->{$id}->{title} = $title;
+    putObject( $current, $path );
+    makeHTML( $current, $path );
+
+    # set the path to display the new object
+    $path = "$path/$id";
+    return $path;
+}
+
+sub deleteObject {
+    my $path = shift;
+    my $object = getObject( $path );
+    my $id = $object->{id};
+
+    unlink "$root/$path/index.html";
+    unlink "$root/$path/object.xml";
+    rmdir "$root/$path";
+
+    # ... and remove the object from the parent object's contents ...
+    my $parent = dirname( $path );
+    $object = getObject( $parent );
+    delete $object->{contents}->{$id};
+    putObject( $object, $parent );
+    makeHTML( $object, $parent );
+
+    # set the path to display the new object
+
+    $path = $parent;
+    return $path;
+}
+
+##----------------------------------------------------------------------
+
+sub addFile {
+    my $path = shift;
+    my $object = getObject( $path );
+
+    my $filename = $form->param('filename');
+    $filename =~ s/^.*\///;	# strip path
+    $filename =~ tr [A-Za-z0-9._-] [_]cs;
+    $filename =~ s/ +/_/g;
+
+    if ( uploadFile($filename) ) {
+	$object->{contents}->{$filename}->{title} = $form->param('filedesc');
+	putObject( $object, $path );
+	makeHTML( $object, $path );
+    }
+
+}
+
+sub uploadFile {
+    my $filename = shift;
+    return 0 unless $filename;
+
+    my ($buffer, $bytesread, $savename, $savefile);
+
+    my $fh = $form->upload('filename');
+    open (OUTFILE,">>$root/$path/$filename");
+    while ($bytesread=read($fh,$buffer,1024)) {
+	print OUTFILE $buffer;
+    }
+    close (OUTFILE);
+
+    # if this is an image file ...
+    if ( $filename =~ /(.+)\.(jpg|png|gif)$/i ) {
+    	my $fstem = $1;
+	my $ftype = $2;
+	# make a thumbnail (height 75px) ...
+	my $result = qx(/usr/bin/convert "$root/$path/$filename" -thumbnail x75 "$root/$path/${fstem}-t.jpg" 2>&1 &);
+	# ... and a web sized image (height 800px)
+	$result = qx(/usr/bin/convert "$root/$path/$filename" -resize x800 "$root/$path/${fstem}-w.jpg" 2>&1 &);
+
+	# NB if we need to get info about the image, use this ...
+	#my $result = qx(/usr/bin/identify "$root/$path/$filename" 2>&1);
+	# e.g.
+	#     identify series1151/0261/1151-0261.jpg
+	#  -> series1151/0261/1151-0261.jpg JPEG 1244x1696 1244x1696+0+0 DirectClass 8-bit 76.9141kb
+    }
+
+    return 1;
+}
+
+sub deleteFile {
+    my $path = shift;
+    my $object = getObject( $path );
+
+    foreach my $filename ( $form->param('contents') ) {
+	delete $object->{contents}->{$filename};
+	unlink "$root/$path/$filename";
+    }
+
+    putObject( $object, $path );
+    makeHTML( $object, $path );
+}
+
+##----------------------------------------------------------------------
+
+sub getTitle {
+    my $path = shift;
+    my $object = XMLin( "$root/$path/object.xml",
+	    KeyAttr => [ 'id' ], ForceArray => 1, SuppressEmpty => 1 );
+    my $title = $object->{title};
+    return $title;
+}
+
+sub getObject {
+    my $path = shift;
+    my $object = XMLin( "$root/$path/object.xml",
+	    KeyAttr => [ 'id' ], ForceArray => 1, SuppressEmpty => 1 );
+    return $object;
+}
+
+sub putObject {
+    my ($object, $path) = @_;
+    XMLout( $object,
+	    OutputFile => "$root/$path/object.xml",
+	    KeyAttr => [ 'id' ], RootName => 'object' );
+}
+
+##----------------------------------------------------------------------
+
+sub makeHTML {
+    my ($object, $path) = @_;
+    my $type = $object->{type};
+    my $title = $object->{title};
+
+    open HTML, ">$root/$path/index.html"
+	or die "Cannot create index.html, $!\n";
+    select HTML;
+    print html_head( $title );
+
+    print qq|<h1>|;
+    my $parent = dirname( $path ) if $path;
+    my $tree = '';
+	my $t = getTitle($tree);
+	print qq|<span class="parentlink"><a href="${home}/${tree}">$t</a></span> : |;
+    foreach my $x ( split /\//, $parent ) {
+	next unless $x;
+	next if $x eq '.';
+	$tree .= "$x/";
+	my $t = getTitle($tree);
+	print qq|<span class="parentlink"><a href="${home}/${tree}">$t</a></span> : |;
+    }
+    print qq|$title</h1>\n|;
+
+    my %fields = %{ $config->{types}->{type}->{$type}->{field} };
+    print qq|<fieldset>\n|;
+    print qq|<table class="editform">\n|;
+    foreach my $field (sort keys %fields) {
+	my %field = %{ $fields{$field} };
+	my $name = $field{name};
+	my $value = $object->{$name}; $value = '' unless defined $value;
+	if (defined $value and $value) {
+	    print qq|<tr><th width="25%">$field{caption}:</th>|;
+	    print qq|<td>|;
+	    print $value;
+	    print qq|</td>|;
+	    print qq|</tr>|;
+	}
+    }
+    print qq|</table>\n|;
+    print qq|</fieldset>\n|;
+
+    print qq|<fieldset>\n|;
+    print qq|<table class="editform">\n|;
+    print qq|<tr><th width="25%">Contents:</th>|;
+    print qq|<td>|;
+    foreach my $id ( sort keys %{ $object->{contents} } ) {
+	my $title = $object->{contents}->{$id}->{title};
+	$title = $id unless $title;
+	if ( $id =~ /(.+)\.(jpg|png)$/i ) {
+	    my $fstem = $1;
+	    print qq|<a href="${home}/${path}/${fstem}-w.jpg"|;
+	    print qq| rel="lightbox[show]" title="$title" rev="${home}/${path}/$id"|;
+	    print qq|><img src="${home}/${path}/${fstem}-t.jpg" /></a>\n|;
+	} else {
+	    print qq|<a href="${home}/${path}/$id">$title</a><br />\n|;
+	}
+    }
+    print qq|</td>|;
+    print qq|</tr>|;
+    print qq|</table>\n|;
+    print qq|</fieldset>\n|;
+
+    print html_foot();
+    close HTML;
+    select STDOUT;
+}
+
+##----------------------------------------------------------------------
+
+sub oops {
+    my $mesg = shift;
+    print qq|<p><b>$mesg</b></p>\n|;
+}
+
+sub http_header {
+    return "Content-type: text/html\n\n";
+} 
+
+sub html_head {
+    my $title = shift;
+    return qq|<!doctype html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>$title</title>\n|,
+    $config->{html}->{htmlhead}->{content},
+    qq|
+</head>
+<body>
+|,
+    $config->{html}->{pagehead}->{content};
+}
+
+sub html_foot {
+    my $date = localtime();
+    return
+	qq|<hr/>|,
+	qq|<p>This form generated by $ENV{SCRIPT_NAME} on $date for $path</p>|,
+	$config->{html}->{pagefoot}->{content};
+}
+
+##----------------------------------------------------------------------
+
+sub getConfig {
+    my $c = $form->param('c');
+    unless ( defined $c and $c) {
+	print http_header();
+	oops( "Oops! no collection defined! Try ?c=collection." );
+	exit;
+    }
+
+    unless ( -d "$top/$c" ) {
+	print http_header();
+	oops( "Oops! collection $c not found." );
+	exit;
+    }
+
+    unless ( -e "$top/$c/config.xml" ) {
+	print http_header();
+        oops( "Oops! No config file found for collection $c." );
+	return;
+    }
+
+    # get the configuration for the collection ...
+    my $config = XMLin( "$top/$c/config.xml", KeyAttr => [ 'id' ] );
+
+    return $config;
+}
+
+##----------------------------------------------------------------------
+
+sub check_authorisation {
+
+    ## Here's where, if desired, you can manage authorisation for lark.
+    ## Turn this on with
+    ##     <config authorisation="true"> ....
+    ##
+    ## You'll need to supply your own code for this feature.
+    ## This might begin with a call to another cgi script for
+    ## authentication. The authentication script will then return here,
+
+    ## We can then check that the user id provided has been authorised
+    ### to update this archive.
+
+    ## E.g.
+    unless ( grep /^$instid$/, @{ $config->{users}->{id} } ) {
+	print http_header();
+	oops( qq|Sorry! You are not authorised to use this form.| );
+	exit;
+    }
+}
+
+sub save_authorisation {
+
+    ## save any fields used for authorisation
+
+}
+
+__END__
+
+=head1 NAME
+
+lark : Lighweight ARchive manager
+
+=head1 USAGE
+
+This script should be placed in a suitable web server cgi-bin
+directory, with appropriate protection, assuming you don't want the
+whole world to edit your archive
+
+=head1 DESCRIPTION
+
+LARK is a lighweight tool for building an archive.
+
+A Lark archive is defined as a configuration file and an arbitrarily
+nested set of objects, using the file system as storage.
+
+An object may be a collection of other objects, or it may be a document.
+
+A collection includes metadata describing the object, and optionally
+one or more objects.
+
+    <object id="example"
+	description="This is an example collection object"
+	title="An example of a collection"
+	type="collection">
+      <contents id="1" title="Object 1" />
+      <contents id="1" title="Object 2" />
+    </object>
+
+This example would be stored as .../example/object.xml
+
+A document includes metadata describing the document, and optionally
+one or more data files respresenting the document, in any desired
+digital format (jpg, pdf, mp3, doc, xls, ...).
+
+    <object id="1"
+	description="This is an example document object"
+	title="An example of a document"
+	type="image">
+      <contents id="some.jpg" title="example photograph" />
+    </object>
+
+This example would be stored as .../example/1/object.xml and .../example/1/some.jpg
+
+=head1 CONFIGURATION
+
+An archive requires a configuration file, config.xml, in the root directory of
+the archive.
+
+A minimal configuration would be:
+
+    <config>
+      <root>/data/example</root>
+    </config>
+
+i.e. we have to at least tell LARK where the files are!
+
+A more detailed example, allowing for the archive to be exposed on the Web,
+would be:
+
+    <config>
+      <root>/data/example</root>
+      <home>http://www.myschool.edu/lark/example</home>
+      <title>Lark example</title>
+      <!-- document types -->
+      <types>
+	<type id="collection">
+	  <field id="000" name="id" type="text" size="20" caption="ID" />
+	  <field id="001" name="title" type="text" size="50" caption="Title" />
+	  <field id="007" name="description" type="textarea" cols="50" rows="5" caption="Description" />
+	  ...
+	</type>
+	<type id="document">
+	  <field id="000" name="id" type="text" size="20" caption="ID" />
+	  <field id="001" name="title" type="text" size="50" caption="Title" />
+	  <field id="002" name="author" type="text" size="50" caption="Author" />
+	  ...
+	</type>
+	<type id="photograph">
+	  <field id="000" name="id" type="text" size="20" caption="ID" />
+	  <field id="001" name="title" type="text" size="50" caption="Title" />
+	  <field id="002" name="photographer" type="text" size="50" caption="Photographer" />
+	  ...
+	</type>
+	...
+      </types>
+      <!-- html code for building web pages -->
+      <html id="htmlhead"><![CDATA[
+<meta http-equiv="Content-Language" content="en" />
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<link rel="StyleSheet" type="text/css" href="/coll/lark.css" />
+      ]]></html>
+    </config>
+
+In this example, we've defined some object types (collection, document, photograph, ...)
+and some html code to be included when we build web pages. Our CGI script, lark.cgi,
+uses these when constructing a web edit form, and for building web pages.
+
+You can also include any other configuration values which might be used in
+locally written script.
+
+=head1 AUTHOR
+
+Steve Thomas <stephen.thomas@adelaide.edu.au>
+
+=head1 VERSION
+
+This is version 2013.12.07
+
+=head1 LICENCE
+
+Copyright (c) 2013 Stephen George Anthony Thomas
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+=cut
+
